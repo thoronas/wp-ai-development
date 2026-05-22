@@ -3,7 +3,7 @@ title: WP AI Development Workflow
 last_updated: 2026-05-22
 ---
 
-The end-to-end workflow for AI-assisted WordPress development using Claude Code and the [WP Scaffold](../tools/wp-scaffold.md). Covers first-time machine setup, project bootstrapping (new and existing), and daily session habits.
+The end-to-end workflow for AI-assisted WordPress development using Claude Code and the [WP Scaffold](https://github.com/thoronas/wp-claude-scaffolding). Covers first-time machine setup, project bootstrapping (new and existing), and daily session habits.
 
 ---
 
