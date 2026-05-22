@@ -2,3 +2,4 @@ title: WP AI Development Workflow
 description: End-to-end workflow for AI-assisted WordPress development using Claude Code and WP Scaffold.
 theme: minima
 markdown: kramdown
+github_username: thoronas

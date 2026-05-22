@@ -1,5 +1,4 @@
 ---
-title: WP AI Development Workflow
 last_updated: 2026-05-22
 ---
 
