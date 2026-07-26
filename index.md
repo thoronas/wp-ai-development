@@ -1,8 +1,10 @@
 ---
-last_updated: 2026-05-22
+last_updated: 2026-07-25
 ---
 
-The end-to-end workflow for AI-assisted WordPress development using Claude Code and the [WP Scaffold](https://github.com/thoronas/wp-claude-scaffolding). Covers first-time machine setup, project bootstrapping (new and existing), and daily session habits.
+The end-to-end workflow for AI-assisted WordPress development using Claude Code and the [WP Scaffold](https://github.com/thoronas/wp-claude-scaffolding). Covers first-time machine setup, project bootstrapping (new and existing), daily session habits, and verifying the harness actually works.
+
+> **Updated 2026-07-25 — action required for existing setups.** A harness audit found two defects affecting every project bootstrapped before this date: four permission rules that silently do nothing, and three subagents that were never registered. Both are one-line fixes. See the [changelog](/changelog/) for what to run, or jump to [Part 7](#part-7--verification-and-maintenance) for the verification steps.
 
 ---
 
@@ -31,6 +33,7 @@ The script symlinks each skill subdirectory, agent file, and rule file from the 
 Skills:
   ✓ skills/blueprint
   ✓ skills/wordpress-router
+  ✓ skills/workflow-improvement
   ✓ skills/wp-abilities-api
   ✓ skills/wp-block
   ✓ skills/wp-debug
@@ -51,30 +54,43 @@ Agents:
   ✓ agents/security-auditor.md
   ✓ agents/wpcs-enforcer.md
 Rules:
-  ✓ rules/behavioral-standards.md
+  ✓ rules/investigate-before-answering.md
   ✓ rules/js-standards.md
   ✓ rules/php-standards.md
   ✓ rules/template-standards.md
   ✓ rules/test-standards.md
+Pruning removed entries:
+  (nothing to prune)
 ```
 
 ### 3. Verify
 
+Listing the directories confirms the symlinks exist, but **it does not confirm Claude Code can actually parse them.** Those are different questions — see [Part 7](#part-7--verification-and-maintenance) for the smoke test that checks the second one. A malformed agent file produces a perfectly healthy-looking symlink.
+
 ```bash
 ls ~/.claude/skills/
-# blueprint  wordpress-router  wp-abilities-api  wp-block  wp-debug  wp-feature
-# wp-interactivity-api  wp-migrate  wp-performance  wp-phpstan  wp-playground
-# wp-plugin-directory-guidelines  wp-project-triage  wp-review  wp-theme
-# wp-wpcli-and-ops  wpds
+# blueprint  wordpress-router  workflow-improvement  wp-abilities-api  wp-block
+# wp-debug  wp-feature  wp-interactivity-api  wp-migrate  wp-performance
+# wp-phpstan  wp-playground  wp-plugin-directory-guidelines  wp-project-triage
+# wp-review  wp-theme  wp-wpcli-and-ops  wpds
 
 ls ~/.claude/rules/
-# behavioral-standards.md  js-standards.md  php-standards.md
+# investigate-before-answering.md  js-standards.md  php-standards.md
 # template-standards.md  test-standards.md
 ```
 
 ### Keeping skills up to date
 
-Because `install.sh` creates symlinks (not copies), any edit to a file in `~/Sites/wp-scaffold-global/` is picked up by `~/.claude/` immediately — no re-running needed. Only run `install.sh` again if you add a new skill, agent, or rule file.
+Because `install.sh` creates symlinks (not copies), any edit to a file in `~/Sites/wp-scaffold-global/` is picked up by `~/.claude/` immediately.
+
+**Re-run `install.sh` after every `git pull`.** It is no longer only for additions — it also *prunes* links whose target has been deleted upstream. Without that step, a rule removed in the repo leaves a dangling symlink in `~/.claude/rules/` on your machine:
+
+```bash
+cd ~/Sites/wp-scaffold-global
+git pull && ./install.sh
+```
+
+This matters most on a second machine, or after any release that removes a rule or skill. Pulling alone is not enough.
 
 ---
 
@@ -170,13 +186,31 @@ The default settings.json scopes read/write permissions to `themes/**` and `plug
 ```json
 "allow": [
   "Read(**)",
-  "Write(src/**)",
-  "Write(inc/**)",
-  "Write(templates/**)"
+  "Edit(src/**)",
+  "Edit(inc/**)",
+  "Edit(templates/**)"
 ]
 ```
 
 Match the paths to where your actual code lives.
+
+> **Use `Edit(...)`, not `Write(...)`, for file-write permissions.**
+> Claude Code matches all file-editing tools against `Edit(path)` rules. A `Write(path)` rule silently no-ops — it never matches, so you keep getting permission prompts for paths you believed were pre-approved, with no error to explain why.
+>
+> Claude Code does warn about this, but on **stderr at session start**, where it is easy to miss for months:
+>
+> ```text
+> Permission allow rule (.claude/settings.json): Write(themes/**) is not matched by
+> file permission checks — only Edit(path) rules are. Use Edit(themes/**) instead.
+> ```
+>
+> Earlier versions of this page and of the scaffold template both used `Write(...)`, so **any project bootstrapped before 2026-07-25 has four dead rules.** Check with:
+>
+> ```bash
+> grep '"Write(' .claude/settings.json
+> ```
+>
+> Any output means those rules are dead — change `Write(` to `Edit(`. `bin/audit-drift.sh` checks this across all your projects at once (see [Part 7](#part-7--verification-and-maintenance)).
 
 ### Step 6 — Run composer install
 
@@ -395,6 +429,28 @@ The next session picks up automatically. Replaces manual context-pasting at sess
 | `/wp-wpcli-and-ops` | WP-CLI operations: search-replace, db, cron, cache, multisite |
 | `/wpds` | Build UIs using the WordPress Design System |
 
+#### Process
+
+| Skill | When to invoke |
+| ----- | -------------- |
+| `/workflow-improvement` | Assess the workflow itself and propose improvements — five lenses (bottleneck, what's repeated, what can be deleted, stale context, mixed roles) and one concrete next action. Not a code review. |
+
+### Agents
+
+Agents run as separate subprocesses with their own context window. That isolation is the point: an agent asked to find problems in work it did not produce is a genuine second opinion, not the same session grading itself.
+
+| Agent | Purpose | Tools |
+| ----- | ------- | ----- |
+| `wpcs-enforcer` | Validate and fix every WPCS violation; text-domain aware across theme and plugin | read/edit/shell |
+| `security-auditor` | Find vulnerabilities — SQLi, XSS, CSRF, broken access control, unsafe REST callbacks | **read-only** |
+| `performance-profiler` | Find N+1 queries, missing caching, autoload bloat, unconditional asset loading | read/edit/shell |
+
+`security-auditor` is deliberately read-only. Its job is to report findings and show corrected code, not to apply it — so a security review cannot silently rewrite the thing it is reviewing.
+
+You do not usually invoke agents by name. Claude delegates to them when the task matches, e.g. *"Run a full WPCS audit on the plugin"* or *"Audit this file for security issues."*
+
+> **Agent files require YAML frontmatter.** An agent `.md` with no `---` block containing `name:` and `description:` is not registered at all — it is silently ignored. It still symlinks correctly and still looks fine in `ls`, so this failure is invisible unless you check the agent list directly. All three agents here were inert for six weeks in 2026 for exactly this reason. Verify with the smoke test in [Part 7](#part-7--verification-and-maintenance).
+
 ---
 
 ## Part 5 — Development Prompt Library
@@ -446,6 +502,70 @@ For large implementations: `"Produce the full implementation plan with file-by-f
 
 To update an existing skill, edit the file directly. The symlink means `~/.claude/` reflects the change instantly.
 
+**Every `SKILL.md` needs YAML frontmatter** with `name:` and `description:`. The description is what Claude matches against to decide whether the skill applies, so write it as a trigger condition — *when* to use this — not as a summary of what it contains. Same requirement applies to agent files in `agents/`.
+
+After adding anything, run the smoke test below. A file that fails to parse is silently ignored rather than reported.
+
+---
+
+## Part 7 — Verification and Maintenance
+
+Three things in this setup fail silently. Each has a check.
+
+### Smoke-test the harness — run it, don't read it
+
+Reading a config file validates *intent*. It cannot tell you whether the tool can parse it, because a malformed file looks completely normal. In July 2026 two defects had been live for over a month here — three unregistered agents and four dead permission rules — and neither was visible on inspection. Both took one command to find.
+
+From inside a real project:
+
+```bash
+claude -p "List every subagent type available to you via the Agent tool. \
+Output ONLY their exact names, one per line. Do not use any tools." 2>&1 | tail -30
+```
+
+| Signal | Healthy | Broken |
+| ------ | ------- | ------ |
+| Custom agents | `wpcs-enforcer`, `security-auditor`, `performance-profiler` appear alongside the built-ins | only built-ins (`claude`, `Explore`, `general-purpose`, `Plan`, …) — your agent files are not parsing |
+| stderr warnings | none | `Permission allow rule ... is not matched by file permission checks` — that rule is dead |
+| Skills | expected `/wp-*` skills are invocable | missing — check the `install.sh` symlinks resolve |
+
+Then confirm the install is wired:
+
+```bash
+ls -la ~/.claude/agents ~/.claude/rules   # symlinks must resolve, not dangle
+ls ~/.claude/skills | wc -l               # should match skills/ in wp-scaffold-global
+```
+
+Run this after any change to `agents/`, `rules/`, or `settings.json`, and on each new Claude model release.
+
+### Audit drift
+
+```bash
+cd ~/Sites/wp-scaffold-global
+./bin/audit-drift.sh           # report divergence
+./bin/audit-drift.sh --record  # mark current state as in-sync
+```
+
+Two things drift silently.
+
+**Bootstrapped projects.** `CLAUDE.md`, `PROJECT-SPEC.md`, and `.claude/settings.json` are **copied** by `bin/init.sh` and never sync again. There is no mechanism that pushes a template fix into an existing project — this is why the `Write(`→`Edit(` fix had to be applied to each project by hand. List your projects in `.sync-projects` and the audit checks each for known-bad patterns.
+
+**The white-label fork.** `portable-skills/` is a vendor-neutral copy of the skill library targeting a local model (no Claude, MCP, or slash-command references). It and `skills/` are two hand-maintained copies of roughly the same WordPress knowledge — about three-quarters identical content, one-quarter mechanical adaptation.
+
+The audit **reports rather than reconciles**, because some divergence is correct. `dev-behavioral-standards` is retained on the portable side *precisely because* it was deleted from the Claude side: judgement-over-rules is validated for current frontier models, not for a small local one. Intentional divergences go in `.sync-allowlist` **with a stated reason** — an unexplained entry is indistinguishable from an orphan a year later.
+
+Workflow: audit → reconcile what's real → `--record` to re-baseline. A permanently dirty report is worse than none; fix it or allowlist it.
+
+### Review the harness on each model release
+
+As models improve, instructions that were load-bearing become noise — or worse, cause overtriggering. On each major release, ask of every rule and skill: *does the model now do this correctly without being told?*
+
+Phrasing written to stop older models under-triggering (`CRITICAL: You MUST use this tool...`) now causes over-triggering. Prefer plain phrasing. Anthropic removed **over 80% of Claude Code's own system prompt** for the Claude 5 generation with no measurable loss on their coding evaluations — the scaffold's July 2026 cut was a smaller version of the same exercise.
+
+`/doctor` inside Claude Code helps rightsize `CLAUDE.md` files and skills automatically.
+
+**Delete before adding. A harness that only grows is a harness nobody is reading.**
+
 ---
 
 ## Key Guardrails
@@ -457,13 +577,23 @@ The scaffold's `settings.json` pre-denies at the tool-permission level — not r
 
 These blocks apply in every project that uses the scaffold's `settings.json` without any per-session configuration needed.
 
-### Global Behavioral Rules
+### Path-Scoped Rules
 
-`rules/behavioral-standards.md` (active in every project via `~/.claude/rules/`) enforces four principles derived from Karpathy's LLM coding guidelines:
+Rules activate automatically when a session touches a matching file — no invocation needed.
 
-| Rule | What it means in practice |
-| ---- | ------------------------- |
-| **Think before coding** | State assumptions explicitly; surface ambiguity before building |
-| **Simplicity first** | Minimum code that solves the problem — no speculative abstractions |
-| **Surgical changes** | Touch only what the request requires; mention unrelated issues rather than fixing them |
-| **Goal-driven execution** | Transform tasks into verifiable goals with a test or check per stage |
+| Rule | Applies to |
+| ---- | ---------- |
+| `php-standards` | `plugins/**/*.php`, `themes/**/inc/**/*.php`, `themes/**/functions.php` |
+| `js-standards` | `**/assets/**/*.js`, `**/blocks/**/*.js{x}` |
+| `template-standards` | `themes/**/templates/**/*.html`, `**/patterns/**/*.php` |
+| `test-standards` | `tests/**/*.php` |
+| `investigate-before-answering` | PHP and JS under `plugins/`, `mu-plugins/`, `themes/` |
+
+**No rule is globbed to `**`.** Two used to be, and both were removed in the July 2026 audit:
+
+- `behavioral-standards` (400 words) enforced four Karpathy-derived principles — think before coding, simplicity first, surgical changes, goal-driven execution — on every file in every project. Deleted because each had stopped earning its place: `<use_parallel_tool_calls>` was an *exact duplicate* of Claude Code's own system prompt; "do not add comments to code you did not change" **directly contradicted** it (the system prompt now says to match the surrounding code's comment density); "match existing style" had become default behaviour; and the rest were already stated, with WordPress specifics, in the project `CLAUDE.md`. The one part with independent value, `<investigate_before_answering>`, survives as the path-scoped rule above.
+- `workflow-improvement` (904 words) duplicated a skill that was already installed and invocable as `/workflow-improvement`. Pure methodology, loaded unconditionally.
+
+Together those cut the context loaded before *any* task from ~3,032 words to ~1,642 — a 46% reduction — and a non-WordPress session now loads no scaffold rules at all.
+
+The general lesson is worth keeping in mind when you add a rule: **a rule scoped to `**` is loaded in every project you own, including ones with no PHP in them.** Prefer path scoping, and prefer encoding *facts about the project* over *instructions on how to think*. Models improve, and encoded methodology becomes a ceiling; project context ages far more slowly.
